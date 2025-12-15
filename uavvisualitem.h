@@ -2,38 +2,29 @@
 #define UAVVISUALITEM_H
 
 #include <QGraphicsRectItem>
-#include <QColor>
-#include <QPainter>
-#include <QtMath>
-#include <QPen>
-#include <QVector2D> // <<< НОВОЕ: Для работы с векторами
+#include <QGraphicsEllipseItem>
+#include <QGraphicsPolygonItem>
+#include <QGraphicsLineItem>
+#include <QVector2D>
 
-class UAVVisualItem : public QGraphicsRectItem
-{
+class UAVVisualItem : public QGraphicsRectItem {
 public:
-    UAVVisualItem(qreal size);
-
-    // Установка углов Roll и Pitch (Крен и Тангаж)
+    UAVVisualItem(qreal size, QGraphicsItem* parent = nullptr);
+    ~UAVVisualItem() override;
     void setAngles(qreal roll, qreal pitch);
-
-    // <<< НОВОЕ: Установка векторов скорости и цели
     void setVectors(const QVector2D& velocity, const QVector2D& targetVector);
-
-    void setFillColor(const QColor& color);  // Установка цвета заливки
-
-protected:
-    // Переопределение метода для отрисовки
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget = nullptr) override;
+    void setFillColor(const QColor& color);
 
 private:
-    qreal itemSize;
-    qreal currentRoll;
-    qreal currentPitch;
-    QColor fillColor;
+    qreal size;
+    qreal currentRoll = 0.0;
+    qreal currentPitch = 0.0;
 
-    // <<< НОВОЕ: Хранение векторов
-    QVector2D currentVelocity;
-    QVector2D currentTargetVector;
+    QGraphicsEllipseItem* body;
+    QGraphicsPolygonItem* arrow;
+    QGraphicsLineItem* velVector;
+    QGraphicsLineItem* targetVectorLine;
+    void updateShape();
 };
 
 #endif // UAVVISUALITEM_H

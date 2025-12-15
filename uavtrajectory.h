@@ -9,21 +9,13 @@ class UAVTrajectory
 {
 public:
     const qreal CORNER_RADIUS = 20.0;
-
     UAVTrajectory();
-
     void addPoint(qreal x, qreal y);
-
-    // Сброс индекса, но не очистка самих точек
     void reset();
-
     QPointF getCurrentTarget() const;
     QPointF getNextTarget() const;
-
     bool advanceToNextTarget();
-
     const QList<QPointF>& getPoints() const;
-
     int getCurrentIndex() const;
 
 private:

@@ -1,97 +1,68 @@
 #include "uavvisualitem.h"
 #include <QtMath>
 #include <QPen>
-#include <QVector2D>
+#include <QBrush>
 
-UAVVisualItem::UAVVisualItem(qreal size)
-    : itemSize(size), currentRoll(0.0), currentPitch(0.0), fillColor(Qt::red)
+UAVVisualItem::UAVVisualItem(qreal s, QGraphicsItem* parent)
+    : QGraphicsRectItem(parent), size(s)
 {
-    // Устанавливаем прямоугольник, который будет нашим ограничивающим прямоугольником
-    // Центрируем его относительно (0, 0)
     qreal halfSize = size / 2.0;
-    setRect(QRectF(-halfSize, -halfSize, size, size));
-    // Задаем центр вращения
-    setTransformOriginPoint(0, 0);
+    setRect(-halfSize, -halfSize, size, size);
+
+    body = new QGraphicsEllipseItem(QRectF(-halfSize / 2.0, -halfSize / 2.0, size / 2.0, size / 2.0), this);
+    body->setPen(QPen(Qt::black, 1));
+    body->setBrush(QBrush(Qt::cyan));
+
+    QPolygonF triangle;
+    triangle << QPointF(halfSize, 0)
+             << QPointF(halfSize / 2.0, -halfSize / 4.0)
+             << QPointF(halfSize / 2.0, halfSize / 4.0);
+    arrow = new QGraphicsPolygonItem(triangle, this);
+    arrow->setBrush(QBrush(Qt::red));
+    arrow->setPen(Qt::NoPen);
+
+    velVector = new QGraphicsLineItem(0, 0, 0, 0, this);
+    velVector->setPen(QPen(Qt::yellow, 2));
+
+    targetVectorLine = new QGraphicsLineItem(0, 0, 0, 0, this);
+    targetVectorLine->setPen(QPen(Qt::darkGray, 1, Qt::DashLine));
+
+    setBrush(Qt::NoBrush);
+    setPen(Qt::NoPen);
 }
+
+UAVVisualItem::~UAVVisualItem() {}
 
 void UAVVisualItem::setAngles(qreal roll, qreal pitch) {
     currentRoll = roll;
     currentPitch = pitch;
-
-    // Вращение всего элемента на плоскости XY (Roll - крен)
-    // Устанавливаем вращение вокруг оси Z, равное крену.
-    setRotation(-roll);
-    update();
-}
-
-// <<< НОВОЕ: Метод для установки векторов
-void UAVVisualItem::setVectors(const QVector2D& velocity, const QVector2D& targetVector) {
-    currentVelocity = velocity;
-    currentTargetVector = targetVector;
-    update();
+    updateShape();
 }
 
 void UAVVisualItem::setFillColor(const QColor& color) {
-    fillColor = color;
-    update();
+    body->setBrush(color);
 }
 
-void UAVVisualItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) {
-    Q_UNUSED(option);
-    Q_UNUSED(widget);
+void UAVVisualItem::setVectors(const QVector2D& velocity, const QVector2D& targetVec) {
+    qreal scale = 5.0;
+    qreal vx = velocity.x() * scale;
+    qreal vy = velocity.y() * scale;
+    velVector->setLine(0, 0, vx, vy);
 
-    qreal halfSize = itemSize / 2.0;
-    qreal vectorScale = itemSize * 0.5; // Масштаб для векторов
-
-    // 1. Отрисовка тела (квадрат, представляющий БПЛА)
-    painter->setBrush(QBrush(fillColor));
-    painter->setPen(QPen(Qt::black, 2));
-    painter->drawRect(rect());
-
-    // 2. Отрисовка маркера Pitch (индикатор наклона вперед/назад)
-    // Линия Pitch - рисуется вдоль X-оси (вперед)
-    QColor pitchMarkerColor = (currentPitch > 0) ? Qt::darkRed : Qt::darkBlue;
-    QPen pitchMarkerPen(pitchMarkerColor, 3);
-    painter->setPen(pitchMarkerPen);
-
-    qreal pitchIndicatorLength = itemSize / 2.0;
-
-    // Рисуем линию от центра к "носу" (вправо)
-    painter->drawLine(QPointF(0, 0), QPointF(pitchIndicatorLength, 0));
-
-    // Добавляем маленький круг в центре
-    painter->setBrush(Qt::white);
-    painter->drawEllipse(QPointF(0, 0), 2, 2);
-
-
-    // 3. <<< НОВОЕ: Отрисовка Вектора Цели (Target Vector)
-    if (currentTargetVector.lengthSquared() > 0.01) {
-        // Нормализуем, затем умножаем на фиксированную длину (Target Direction)
-        QVector2D targetDir = currentTargetVector.normalized() * vectorScale * 2.5;
-
-        QPen targetPen(Qt::yellow, 2, Qt::DashLine);
-        painter->setPen(targetPen);
-        painter->drawLine(QPointF(0, 0), QPointF(targetDir.x(), targetDir.y()));
+    if (targetVec.lengthSquared() < 0.1) {
+        targetVectorLine->setLine(0, 0, 0, 0);
+    } else {
+        targetVectorLine->setLine(0, 0, targetVec.x() * 0.5, targetVec.y() * 0.5);
     }
+}
 
-    // 4. <<< НОВОЕ: Отрисовка Вектора Скорости (Velocity Vector)
-    if (currentVelocity.lengthSquared() > 0.01) {
-        // Вектор пропорционален скорости, но ограничен в размере для наглядности
-        qreal speed = currentVelocity.length();
-        QVector2D velocityVector = currentVelocity.normalized() * qMin(speed * 1.0, vectorScale * 1.5);
+void UAVVisualItem::updateShape() {
+    qreal halfSize = size / 2.0;
+    qreal bodySize = size / 2.0;
 
-        QPen velocityPen(Qt::green, 3, Qt::SolidLine, Qt::RoundCap);
-        painter->setPen(velocityPen);
+    qreal scaleX = qMax(0.5, qCos(qDegreesToRadians(qBound(-90.0, currentPitch, 90.0))));
+    qreal scaleY = qMax(0.5, qCos(qDegreesToRadians(qBound(-90.0, currentRoll, 90.0))));
 
-        // Рисуем линию
-        painter->drawLine(QPointF(0, 0), QPointF(velocityVector.x(), velocityVector.y()));
-
-        // Рисуем наконечник стрелки (для направления)
-        qreal angle = qAtan2(velocityVector.y(), velocityVector.x());
-        qreal arrowSize = itemSize / 4.0;
-        QPointF endPoint = QPointF(velocityVector.x(), velocityVector.y());
-
-        painter->drawLine(endPoint, endPoint - QPointF(qCos(angle - M_PI / 6.0) * arrowSize, qSin(angle - M_PI / 6.0) * arrowSize));
-        painter->drawLine(endPoint, endPoint - QPointF(qCos(angle + M_PI / 6.0) * arrowSize, qSin(angle + M_PI / 6.0) * arrowSize));
-    }
+    body->setRect(-bodySize/2.0 * scaleX, -bodySize/2.0 * scaleY, bodySize * scaleX, bodySize * scaleY);
+    body->setRotation(-currentRoll);
 }

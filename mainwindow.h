@@ -3,63 +3,68 @@
 
 #include <QMainWindow>
 #include <QGraphicsScene>
-#include <QGraphicsEllipseItem>
-#include <QGraphicsRectItem>
 #include <QTimer>
-
-// КРИТИЧЕСКИ ВАЖНЫЕ ВКЛЮЧЕНИЯ
+#include <QPointF>
+#include "uavmodel.h"
+#include "terrainmodel.h"
 #include "uavtrajectory.h"
-#include "uavmodel.h"      // <<< УБЕДИТЬСЯ, ЧТО ЭТО ЗДЕСЬ
 #include "uavzvisualizer.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
-// Предварительные объявления классов, чтобы избежать циклических зависимостей,
-// если бы они были использованы только как указатели/ссылки.
-// Но здесь мы используем объекты, поэтому нужно полное включение выше.
+class UAVVisualItem;
 
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 
 public:
-    MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
 protected:
-    void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
 
 private slots:
-    void updateSimulation();
     void on_startButton_clicked();
     void on_clearButton_clicked();
+    void on_manualButton_toggled(bool checked);  // <<< Правильный слот для чекбокса
+    void updateSimulation();
 
 private:
     Ui::MainWindow *ui;
+    QGraphicsScene *scene = nullptr;
+    QGraphicsScene *zScene = nullptr;
+    TerrainModel *terrainModel = nullptr;
 
-    // XY-плоскость
-    QGraphicsScene *scene;
-    QGraphicsEllipseItem *uavDot;
-
-    // Z-плоскость
-    QGraphicsScene *zScene;
-    QGraphicsRectItem *altitudeBar;
-
-    QTimer *timer;
-    UAVTrajectory trajectory;
-    UAVModel uavModel; // <<< ТЕПЕРЬ ДОЛЖЕН БЫТЬ ОПРЕДЕЛЕН БЛАГОДАРЯ ВКЛЮЧЕНИЮ
+    UAVModel uavModel;
+    UAVTrajectory UAVTrajectory;
     UAVZVisualizer zVisualizer;
 
-    QPointF takeoffPoint;
-    bool isSettingTakeoff;
-    QPointF lastDrawnPos;
+    UAVVisualItem *uavDot = nullptr;
+    QGraphicsRectItem *altitudeBar = nullptr;
+    QTimer *timer = nullptr;
 
-    qreal maxSpeed;
-    qreal acceleration;
-    qreal totalDistance;
-    qreal traveledDistance;
+    QPointF takeoffPoint;
+    bool isSettingTakeoff = false;
+    QPointF lastDrawnPos;
+    qreal maxSpeed = 20.0;
+    qreal acceleration = 5.0;
+    qreal totalDistance = 0.0;
+    qreal traveledDistance = 0.0;
+    bool isLanding = false;
+
+    // Ручной режим
+    bool manualMode = false;
+    qreal throttleInput = 0.0;
+    qreal yawInput = 0.0;
+    qreal pitchInput = 0.0;
+    qreal rollInput = 0.0;
 };
+
 #endif // MAINWINDOW_H

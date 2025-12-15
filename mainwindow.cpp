@@ -4,379 +4,384 @@
 #include <QMouseEvent>
 #include <QResizeEvent>
 #include <QDebug>
-#include <QPainter>
 #include <QPen>
+#include <QBrush>
 #include <QVector2D>
 #include <QtMath>
-#include <QGraphicsTextItem>
-#include <QBrush>
+#include <QList>
+#include "uavvisualitem.h"
 
-// --- ИНИЦИАЛИЗАЦИЯ ---
+const int MAP_W = 800;
+const int MAP_H = 600;
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , scene(new QGraphicsScene(this))
-    , uavDot(nullptr)
     , zScene(new QGraphicsScene(this))
-    , altitudeBar(nullptr)
+    , terrainModel(new TerrainModel(MAP_W, MAP_H))
     , timer(new QTimer(this))
-    , takeoffPoint(0, 0)
-    , isSettingTakeoff(false)
-    , lastDrawnPos(0, 0)
-    , maxSpeed(20.0)
-    , acceleration(5.0)
-    , totalDistance(0.0)
-    , traveledDistance(0.0)
+    , manualMode(false)
+    , throttleInput(0.0)
+    , yawInput(0.0)
+    , pitchInput(0.0)
+    , rollInput(0.0)
 {
     ui->setupUi(this);
 
-    // Инициализация XY-View
+    setFocusPolicy(Qt::StrongFocus);
+    activateWindow();
+    raise();
+
     ui->graphicsView->setScene(scene);
     ui->graphicsView->setRenderHint(QPainter::Antialiasing);
     ui->graphicsView->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     ui->graphicsView->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     ui->graphicsView->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    scene->setSceneRect(0, 0, MAP_W, MAP_H);
 
-    // Инициализация Z-View
     if (ui->graphicsViewZ) {
         ui->graphicsViewZ->setScene(zScene);
         ui->graphicsViewZ->setRenderHint(QPainter::Antialiasing);
         ui->graphicsViewZ->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         ui->graphicsViewZ->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        ui->graphicsViewZ->scale(1.0, -1.0); // Переворачиваем Y для оси Z
+        zScene->setSceneRect(0, 0, 400.0, 200.0);
     }
 
-    if (ui->speedInput) {
-        maxSpeed = ui->speedInput->value();
-    }
+    if (ui->speedInput) maxSpeed = ui->speedInput->value();
+
+    // Кнопка Manual — чекбокс
+    ui->manualButton->setCheckable(true);
+    ui->manualButton->setText("Manual");
 
     connect(timer, &QTimer::timeout, this, &MainWindow::updateSimulation);
     connect(ui->startButton, &QPushButton::clicked, this, &MainWindow::on_startButton_clicked);
     connect(ui->clearButton, &QPushButton::clicked, this, &MainWindow::on_clearButton_clicked);
+    connect(ui->manualButton, &QPushButton::toggled, this, &MainWindow::on_manualButton_toggled);
 }
 
-// --- ДЕСТРУКТОР ---
 MainWindow::~MainWindow() {
+    delete uavDot;
+    delete terrainModel;
     delete ui;
 }
 
-// --- ОБРАБОТЧИК ИЗМЕНЕНИЯ РАЗМЕРА ---
 void MainWindow::resizeEvent(QResizeEvent *event) {
-    if (ui->graphicsView && scene) {
-        QSize viewSize = ui->graphicsView->viewport()->size();
-        scene->setSceneRect(0, 0, viewSize.width(), viewSize.height());
-    }
+    if (ui->graphicsView && scene && !scene->sceneRect().isEmpty())
+        ui->graphicsView->fitInView(scene->sceneRect(), Qt::KeepAspectRatio);
     QMainWindow::resizeEvent(event);
 }
 
-// --- ОБРАБОТЧИК НАЖАТИЯ МЫШИ ---
 void MainWindow::mousePressEvent(QMouseEvent *event) {
-    if (!ui->graphicsView->underMouse()) return;
+    if (manualMode || !ui->graphicsView->underMouse()) return;
 
-    QPoint viewPos = ui->graphicsView->mapFrom(this, event->pos());
-    QPointF scenePos = ui->graphicsView->mapToScene(viewPos);
-    qreal maxX = scene->sceneRect().width(), maxY = scene->sceneRect().height();
-    QPointF boundedPos(qBound(0.0, scenePos.x(), maxX), qBound(0.0, scenePos.y(), maxY));
+    QPointF scenePos = ui->graphicsView->mapToScene(ui->graphicsView->mapFrom(this, event->pos()));
+    QPointF p(qBound(0.0, scenePos.x(), qreal(MAP_W)), qBound(0.0, scenePos.y(), qreal(MAP_H)));
 
     if (event->button() == Qt::LeftButton) {
         if (event->modifiers() & Qt::ControlModifier) {
             isSettingTakeoff = true;
-            qDebug() << "Режим установки точки старта активирован. Кликните снова.";
             return;
-        } else if (isSettingTakeoff) {
-            QList<QGraphicsItem*> items = scene->items();
-            for (QGraphicsItem *item : items) {
-                if (item->type() == QGraphicsEllipseItem::Type) {
-                    QGraphicsEllipseItem *ellipse = qgraphicsitem_cast<QGraphicsEllipseItem*>(item);
-                    if (ellipse && ellipse->pen().color() == Qt::green) {
+        }
+        if (isSettingTakeoff) {
+            for (QGraphicsItem *item : scene->items())
+                if (auto *e = qgraphicsitem_cast<QGraphicsEllipseItem*>(item))
+                    if (e->pen().color() == Qt::green) {
                         scene->removeItem(item);
                         delete item;
                         break;
                     }
-                }
-            }
-            takeoffPoint = boundedPos;
-            scene->addEllipse(takeoffPoint.x() - 5, takeoffPoint.y() - 5, 10, 10, QPen(Qt::green, 2), QBrush(Qt::green));
+            takeoffPoint = p;
+            scene->addEllipse(p.x() - 5, p.y() - 5, 10, 10, QPen(Qt::green, 2), QBrush(Qt::green));
             isSettingTakeoff = false;
-            qDebug() << "Точка старта установлена:" << takeoffPoint;
             return;
         }
-    }
 
-    if (event->button() == Qt::LeftButton && !isSettingTakeoff) {
-        trajectory.addPoint(boundedPos.x(), boundedPos.y());
-        scene->addEllipse(boundedPos.x() - 5, boundedPos.y() - 5, 10, 10, Qt::NoPen, QBrush(Qt::blue));
+        UAVTrajectory.addPoint(p.x(), p.y());
+        scene->addEllipse(p.x() - 5, p.y() - 5, 10, 10, Qt::NoPen, QBrush(Qt::blue));
 
-        const auto& points = trajectory.getPoints();
+        const auto& points = UAVTrajectory.getPoints();
         if (points.size() > 1) {
-            QPointF p1 = points.at(points.size() - 2);
-            QPointF p2 = points.last();
-            QPen dashedPen(Qt::gray, 1, Qt::DashLine);
-            scene->addLine(p1.x(), p1.y(), p2.x(), p2.y(), dashedPen);
+            QPointF a = points[points.size() - 2];
+            QPointF b = points.back();
+            scene->addLine(a.x(), a.y(), b.x(), b.y(), QPen(Qt::gray, 1, Qt::DashLine));
         }
     }
+
+    setFocus();
 }
 
-// --- СЛОТЫ ---
-
-void MainWindow::on_startButton_clicked() {
-    const auto points = trajectory.getPoints();
-
-    if (points.empty() && takeoffPoint.isNull()) {
-        qDebug() << "Нет точек траектории для запуска.";
+void MainWindow::keyPressEvent(QKeyEvent *event) {
+    if (!manualMode) {
+        QMainWindow::keyPressEvent(event);
         return;
     }
 
-    timer->stop();
-    if (uavDot) {
-        scene->removeItem(uavDot);
-        uavDot = nullptr;
+    qDebug() << "Key pressed:" << event->key();
+
+    switch (event->key()) {
+    // Английская раскладка
+    case Qt::Key_W: pitchInput = 1.0; qDebug() << "Pitch forward"; break;
+    case Qt::Key_S: pitchInput = -1.0; qDebug() << "Pitch back"; break;
+    case Qt::Key_A: rollInput = -1.0; qDebug() << "Roll left"; break;
+    case Qt::Key_D: rollInput = 1.0; qDebug() << "Roll right"; break;
+    case Qt::Key_E: throttleInput = 1.0; qDebug() << "Throttle up"; break;
+    case Qt::Key_Q: throttleInput = -1.0; qDebug() << "Throttle down"; break;
+    case Qt::Key_Left: yawInput = -1.0; qDebug() << "Yaw left"; break;
+    case Qt::Key_Right: yawInput = 1.0; qDebug() << "Yaw right"; break;
+    case Qt::Key_Space: throttleInput = 0.0; qDebug() << "Hover"; break;
+
+        // Русская раскладка
+    case 1062: pitchInput = 1.0; qDebug() << "Pitch forward (ц)"; break;  // ц
+    case 1099: pitchInput = -1.0; qDebug() << "Pitch back (ы)"; break;   // ы
+    case 1092: rollInput = -1.0; qDebug() << "Roll left (ф)"; break;     // ф
+    case 1074: rollInput = 1.0; qDebug() << "Roll right (в)"; break;     // в
+    case 1059: throttleInput = 1.0; qDebug() << "Throttle up (у)"; break; // у
+    case 1049: throttleInput = -1.0; qDebug() << "Throttle down (й)"; break; // й
+
+    default: qDebug() << "Unknown key"; break;
     }
-    if (altitudeBar) {
-        zScene->removeItem(altitudeBar);
-        altitudeBar = nullptr;
+}
+
+void MainWindow::keyReleaseEvent(QKeyEvent *event) {
+    if (!manualMode || event->isAutoRepeat()) return;
+
+    qDebug() << "Key released:" << event->key();
+
+    switch (event->key()) {
+    case Qt::Key_W: case Qt::Key_S: case 1062: case 1099: pitchInput = 0.0; break;
+    case Qt::Key_A: case Qt::Key_D: case 1092: case 1074: rollInput = 0.0; break;
+    case Qt::Key_E: case Qt::Key_Q: case 1059: case 1049: throttleInput = 0.0; break;
+    case Qt::Key_Left: case Qt::Key_Right: yawInput = 0.0; break;
+    }
+}
+
+void MainWindow::on_manualButton_toggled(bool checked) {
+        manualMode = checked;
+        ui->manualButton->setText(manualMode ? "Auto" : "Manual");
+
+        uavModel.setManualControlEnabled(manualMode);
+    qDebug() << "Manual mode:" << (manualMode ? "ON" : "OFF");
+
+    if (manualMode) {
+        if (!uavDot) {
+            QPointF startPos(400.0, 300.0);
+            qreal ground = terrainModel->getGroundAltitude(startPos.x(), startPos.y());
+            State init;
+            init.pos = QVector3D(startPos.x(), startPos.y(), ground + 5.0);
+            uavModel.setState(init);
+
+            uavDot = new UAVVisualItem(zVisualizer.BAR_WIDTH * 2.0);
+            uavDot->setPos(startPos);
+            scene->addItem(uavDot);
+            qDebug() << "UAV created for manual mode";
+        }
+
+        timer->start(16);
+        if (uavDot) uavDot->setFillColor(Qt::magenta);
+    } else {
+        timer->stop();
+        if (uavDot) {
+            qreal relAlt = uavModel.getState().pos.z() - terrainModel->getGroundAltitude(uavModel.getState().pos.x(), uavModel.getState().pos.y());
+            uavDot->setFillColor(zVisualizer.getColorByAltitude(relAlt));
+        }
+        throttleInput = yawInput = pitchInput = rollInput = 0.0;
     }
 
+    setFocus();
+}
+
+void MainWindow::on_startButton_clicked() {
+    const auto points = UAVTrajectory.getPoints();
+    if (points.empty() && takeoffPoint.isNull()) return;
+
+    timer->stop();
+    if (uavDot) { scene->removeItem(uavDot); delete uavDot; uavDot = nullptr; }
+
+    zVisualizer.cleanupSceneElements(zScene);
     scene->clear();
     zScene->clear();
+    altitudeBar = nullptr;
 
-    if (!takeoffPoint.isNull()) {
+    const int cellSize = 10;
+    for (int x = 0; x < MAP_W; x += cellSize)
+        for (int y = 0; y < MAP_H; y += cellSize)
+            scene->addRect(x, y, cellSize, cellSize, Qt::NoPen,
+                           QBrush(terrainModel->getColorForAltitude(terrainModel->getGroundAltitude(x, y))));
+
+    if (!takeoffPoint.isNull())
         scene->addEllipse(takeoffPoint.x() - 5, takeoffPoint.y() - 5, 10, 10, QPen(Qt::green, 2), QBrush(Qt::green));
-    }
 
     for (int i = 0; i < points.size(); ++i) {
-        QPointF p = points.at(i);
-        scene->addEllipse(p.x() - 5, p.y() - 5, 10, 10, Qt::NoPen, QBrush(Qt::blue));
-
-        if (i == 0 && !takeoffPoint.isNull()) {
-            QPen dashedPen(Qt::gray, 1, Qt::DashLine);
-            scene->addLine(takeoffPoint.x(), takeoffPoint.y(), p.x(), p.y(), dashedPen);
-        } else if (i > 0) {
-            QPointF p1 = points.at(i - 1);
-            QPen dashedPen(Qt::gray, 1, Qt::DashLine);
-            scene->addLine(p1.x(), p1.y(), p.x(), p.y(), dashedPen);
-        }
+        QPointF pt = points[i];
+        scene->addEllipse(pt.x() - 5, pt.y() - 5, 10, 10, Qt::NoPen, QBrush(Qt::blue));
+        QPointF prev = (i == 0 && !takeoffPoint.isNull()) ? takeoffPoint : (i > 0 ? points[i-1] : pt);
+        if (i > 0 || !takeoffPoint.isNull())
+            scene->addLine(prev.x(), prev.y(), pt.x(), pt.y(), QPen(Qt::gray, 1, Qt::DashLine));
     }
 
     if (ui->speedInput) maxSpeed = ui->speedInput->value();
-    qreal targetAltitude = 0.0;
-    if (ui->altitudeInput) targetAltitude = ui->altitudeInput->value();
+    qreal targetAltRel = ui->altitudeInput ? ui->altitudeInput->value() : 99.0;
 
-    QPointF start = takeoffPoint.isNull() ? (points.empty() ? QPointF(0,0) : points.front()) : takeoffPoint;
+    QPointF start = takeoffPoint.isNull() ? (points.isEmpty() ? QPointF(400.0, 300.0) : points.front()) : takeoffPoint;
+    qreal groundStart = terrainModel->getGroundAltitude(start.x(), start.y());
 
-    State initialState;
-    initialState.pos = QVector3D(start.x(), start.y(), 0.0);
-    uavModel.setState(initialState);
-    uavModel.setTargetAltitude(targetAltitude);
+    State init;
+    init.pos = QVector3D(start.x(), start.y(), groundStart + 0.01);
+    uavModel.setState(init);
+    uavModel.setTargetAltitude(groundStart + qMax(0.0, targetAltRel));
 
-    // Расчет полной дистанции
-    totalDistance = 0.0;
-    QPointF currentStartPoint = takeoffPoint.isNull() ? (points.empty() ? QPointF(0,0) : points.front()) : takeoffPoint;
-    QPointF lastPoint = currentStartPoint;
-    for (const auto& point : points) {
-        totalDistance += std::hypot(point.x() - lastPoint.x(), point.y() - lastPoint.y());
-        lastPoint = point;
+    totalDistance = traveledDistance = 0.0;
+    QPointF last = start;
+    for (const auto& pt : points) {
+        totalDistance += std::hypot(pt.x() - last.x(), pt.y() - last.y());
+        last = pt;
     }
-    traveledDistance = 0.0;
+    isLanding = false;
 
-    // --- Инициализация Z-Сцены (graphicsViewZ) ---
-    qreal targetNorm = qBound(0.0, targetAltitude / zVisualizer.MAX_ALTITUDE, 1.0);
-    qreal targetY = targetNorm * zVisualizer.MAX_BAR_HEIGHT;
+    qreal targetY = zVisualizer.MAX_BAR_HEIGHT - qBound(0.0, targetAltRel / zVisualizer.MAX_ALTITUDE, 1.0) * zVisualizer.MAX_BAR_HEIGHT;
+    qreal w = ui->graphicsViewZ ? ui->graphicsViewZ->width() : 410;
+    zScene->addLine(-10, targetY, w + 10, targetY, QPen(Qt::green, 2, Qt::DashLine));
 
-    QPen targetPen(Qt::green, 2, Qt::DashLine);
-    zScene->addLine(-10, targetY, zVisualizer.BAR_WIDTH + 10, targetY, targetPen);
-
-    // Создаем столбик высоты
-    altitudeBar = zScene->addRect(QRectF(0, 0, zVisualizer.BAR_WIDTH, 0), QPen(Qt::darkGray), QBrush(Qt::blue));
-
-    // Центрируем Z-сцену для вертикального индикатора
-    zScene->setSceneRect(-10, 0, zVisualizer.BAR_WIDTH + 20, zVisualizer.MAX_BAR_HEIGHT);
-    ui->graphicsViewZ->centerOn(zVisualizer.BAR_WIDTH / 2, zVisualizer.MAX_BAR_HEIGHT / 2);
-
-
-    // --- Инициализация uavDot (XY-плоскость) ---
-    qreal size = zVisualizer.BASE_SIZE;
-    qreal halfSize = size / 2.0;
-    uavDot = scene->addEllipse(QRectF(start.x() - halfSize, start.y() - halfSize, size, size), QPen(Qt::red), QBrush(Qt::red));
+    uavDot = new UAVVisualItem(zVisualizer.BAR_WIDTH * 2.0);
+    uavDot->setPos(start.x(), start.y());
+    scene->addItem(uavDot);
     lastDrawnPos = start;
 
-    if (!points.empty()) {
-        trajectory.reset();
-        for (const auto& p : points) {
-            trajectory.addPoint(p.x(), p.y());
-        }
+    UAVTrajectory.reset();
+    for (const auto& pt : points) UAVTrajectory.addPoint(pt.x(), pt.y());
+    UAVTrajectory.advanceToNextTarget();
 
-        trajectory.advanceToNextTarget();
-
-        timer->start(16);
-        qDebug() << "Симуляция запущена. Целевая высота:" << targetAltitude;
-    } else {
-        qDebug() << "Точка старта установлена, но нет траектории.";
-    }
+    timer->start(16);
 }
 
 void MainWindow::on_clearButton_clicked() {
     timer->stop();
-    if (uavDot) {
-        scene->removeItem(uavDot);
-        uavDot = nullptr;
-    }
-    if (altitudeBar) {
-        zScene->removeItem(altitudeBar);
-        altitudeBar = nullptr;
-    }
-
+    if (uavDot) { scene->removeItem(uavDot); delete uavDot; uavDot = nullptr; }
+    zVisualizer.cleanupSceneElements(zScene);
+    if (altitudeBar) { zScene->removeItem(altitudeBar); altitudeBar = nullptr; }
     scene->clear();
     zScene->clear();
-    trajectory.reset();
-    takeoffPoint = QPointF(0, 0);
-
+    UAVTrajectory.reset();
     uavModel.setState(State{});
     uavModel.setTargetAltitude(0.0);
-    lastDrawnPos = QPointF(0, 0);
-
-    if (ui->speedInput) maxSpeed = ui->speedInput->value();
-    totalDistance = 0.0;
-    traveledDistance = 0.0;
-    isSettingTakeoff = false;
-
-    qDebug() << "Симуляция сброшена.";
-
-    if (ui->labelPos) {
-        ui->labelPos->setText("x = 0.0, y = 0.0, alt = 0.0, speed = 0.0, max = 0.0, Roll = 0.0, Pitch = 0.0, Yaw = 0.0, total = 0.0, traveled = 0.0");
-    }
+    if (ui->labelPos) ui->labelPos->setText("Ready");
 }
 
-
-// --- ГЛАВНЫЙ ЦИКЛ СИМУЛЯЦИИ (ОЧИЩЕННАЯ ВЕРСИЯ) ---
-
 void MainWindow::updateSimulation() {
-    // 0. Предварительная проверка
-    if (!uavDot || !altitudeBar) return;
+    if (!uavDot) return;
 
     double dt = timer->interval() / 1000.0;
+    auto& mutableState = uavModel.getStateMutable();
+    const auto& state = uavModel.getState();
 
-    // --- 1. ОБЪЯВЛЕНИЕ ПЕРЕМЕННЫХ И СОСТОЯНИЯ ---
-    if (ui->altitudeInput) uavModel.setTargetAltitude(ui->altitudeInput->value());
-    if (ui->speedInput) maxSpeed = ui->speedInput->value();
+    if (manualMode) {
+        const qreal horizAccel = 25.0;          // Ускорение по горизонтали
+        const qreal maxThrust = 20.0;           // Максимальная тяга
+        const qreal hoverThrust = UAVModel::MASS * UAVModel::GRAVITY * 1.05;  // Для зависания
+        const qreal yawRateDeg = 150.0;
+        const qreal maxTiltAngle = 45.0;        // <<< Максимальный наклон корпуса (градусы)
 
-    const auto& currentState = uavModel.getState();
-    qreal currentVx = currentState.vel.x();
-    qreal currentVy = currentState.vel.y();
-    qreal currentSpeed = std::hypot(currentVx, currentVy);
+        qreal yawRad = qDegreesToRadians(state.yaw);
 
-    QPointF currentPos(currentState.pos.x(), currentState.pos.y());
-    QPointF target = trajectory.getCurrentTarget();
+        // Горизонтальное ускорение от стиков
+        QVector2D horizInput(
+            pitchInput * qCos(yawRad) - rollInput * qSin(yawRad),
+            pitchInput * qSin(yawRad) + rollInput * qCos(yawRad)
+            );
+        QVector2D accelXY = horizInput * horizAccel;
 
-    qreal maxSpeedLocal = maxSpeed;
-    qreal accelerationLocal = acceleration;
+        // Тяга по вертикали
+        qreal throttle = (throttleInput + 1.0) * 0.5;  // -1..1 → 0..1
+        qreal thrustZ = throttle * maxThrust;
+        qreal accZ = (thrustZ / UAVModel::MASS) - UAVModel::GRAVITY;
 
-    // (УСТРАНЕНО ПРЕДУПРЕЖДЕНИЕ: unused variable 'distance')
-    double distance = std::hypot(target.x() - currentPos.x(), target.y() - currentPos.y());
-    bool isLastPoint = trajectory.getCurrentIndex() == trajectory.getPoints().size() - 1;
+        // Применяем ускорение
+        mutableState.acc.setX(accelXY.x());
+        mutableState.acc.setY(accelXY.y());
+        mutableState.acc.setZ(accZ);
 
-    // ПРОВЕРКА НА ДОСТИЖЕНИЕ КОНЦА ТРАЕКТОРИИ
-    if (target.isNull()) {
-        timer->stop();
-        uavModel.setTargetAccelerationXY(QVector2D(0.0, 0.0));
-        uavModel.getStateMutable().vel = QVector3D(0.0, 0.0, uavModel.getStateMutable().vel.z());
-        qDebug() << "Траектория завершена.";
-        return;
-    }
+        // Рыскание
+        mutableState.yaw += yawInput * yawRateDeg * dt;
 
-    // ----------------------------------------------------
-    // 2. УПРАВЛЕНИЕ (ВЕСЬ РАСЧЕТ ВЫНЕСЕН В UAVMODEL)
-    // ----------------------------------------------------
+        // === РЕАЛИСТИЧНЫЙ НАКЛОН КОРПУСА ===
+        // Roll и Pitch теперь напрямую от ввода стиков (как в Acro-режиме)
+        mutableState.roll = -rollInput * maxTiltAngle;    // Влево — положительный roll (по конвенции)
+        mutableState.pitch = pitchInput * maxTiltAngle;  // Вперёд — положительный pitch
 
-    QVector2D targetAccelXY = uavModel.calculateTargetAccelerationXY(
-        currentState,
-        target,
-        maxSpeedLocal,
-        accelerationLocal,
-        dt
-        );
-    uavModel.setTargetAccelerationXY(targetAccelXY);
+        // Защита от падения
+        qreal ground = terrainModel->getGroundAltitude(state.pos.x(), state.pos.y());
+        if (state.pos.z() < ground + 0.5) {
+            mutableState.pos.setZ(ground + 0.5);
+            if (mutableState.vel.z() < 0) mutableState.vel.setZ(0);
+        }
 
+    } else {
+        QPointF currentPosXY(state.pos.x(), state.pos.y());
+        qreal groundAlt = terrainModel->getGroundAltitude(currentPosXY.x(), currentPosXY.y());
 
-    // ------------------------------------
-    // 3. ОБНОВЛЕНИЕ ДИНАМИКИ и ПОЗИЦИИ
-    // ------------------------------------
-    uavModel.update(dt);
+        if (!isLanding) uavModel.setTargetAltitude(groundAlt + ui->altitudeInput->value());
 
-    // ----------------------------------------------------
-    // 4. ПРОВЕРКА ПЕРЕХОДА НА СЛЕДУЮЩУЮ ТОЧКУ
-    // ----------------------------------------------------
-    const auto& newState = uavModel.getState();
-    QPointF newPos(newState.pos.x(), newState.pos.y());
+        QPointF target = UAVTrajectory.getCurrentTarget();
+        QVector2D targetAccelXY(0.0, 0.0);
+        QVector2D targetVector(0.0, 0.0);
 
-    qreal cornerRadius = trajectory.CORNER_RADIUS;
-    double currentDistanceToTarget = std::hypot(target.x() - newPos.x(), target.y() - newPos.y());
+        if (!target.isNull()) {
+            bool isLast = UAVTrajectory.getCurrentIndex() == UAVTrajectory.getPoints().size() - 1;
+            double dist = std::hypot(target.x() - currentPosXY.x(), target.y() - currentPosXY.y());
+            targetVector = QVector2D(target - currentPosXY);
 
-    if (isLastPoint) {
-        if (currentDistanceToTarget <= 0.1) {
-            // Финальная остановка: обнуляем скорость
-            uavModel.getStateMutable().vel = QVector3D(0.0, 0.0, uavModel.getStateMutable().vel.z());
-            uavModel.setTargetAccelerationXY(QVector2D(0.0, 0.0));
-
-            if (!trajectory.advanceToNextTarget()) {
-                timer->stop();
-                qDebug() << "Траектория завершена.";
-                return;
+            if (isLast && dist < UAVTrajectory.CORNER_RADIUS) {
+                mutableState.vel.setX(0.0);
+                mutableState.vel.setY(0.0);
+            } else {
+                targetAccelXY = uavModel.calculateTargetAccelerationXY(state, target, maxSpeed, acceleration, dt);
             }
         }
-    } else {
-        // Переход к следующему сегменту на повороте
-        if (currentDistanceToTarget <= cornerRadius) {
-            trajectory.advanceToNextTarget();
+
+        uavModel.setTargetAccelerationXY(targetAccelXY);
+
+        qreal cRad = UAVTrajectory.CORNER_RADIUS;
+        double dToT = target.isNull() ? 0.0 : std::hypot(target.x() - state.pos.x(), target.y() - state.pos.y());
+
+        if (isLanding) {
+            if (state.pos.z() <= groundAlt + 0.05) { timer->stop(); isLanding = false; }
+        } else if (UAVTrajectory.getCurrentIndex() == UAVTrajectory.getPoints().size() - 1 && dToT <= cRad) {
+            uavModel.setTargetAltitude(groundAlt);
+            isLanding = true;
+            UAVTrajectory.advanceToNextTarget();
+        } else if (dToT <= cRad) {
+            UAVTrajectory.advanceToNextTarget();
         }
     }
 
-    // ------------------------------------
-    // 5. ВИЗУАЛИЗАЦИЯ И ОБНОВЛЕНИЕ UI
-    // ------------------------------------
+    uavModel.update(dt);
 
-    // Переменные состояния для UI и визуализации
-    const qreal currentAltitude = newState.pos.z();
-    const qreal currentRoll = newState.roll;
-    const qreal currentPitch = newState.pitch;
-    const qreal currentYaw = newState.yaw;
-    const qreal targetAltitude = uavModel.getTargetAltitude();
+    const auto& newState = uavModel.getState();
+    QPointF newPos(newState.pos.x(), newState.pos.y());
+    qreal newGround = terrainModel->getGroundAltitude(newPos.x(), newPos.y());
 
-    // Обновление Z-оси
-    zVisualizer.updateVisualization(
-        altitudeBar,
-        currentAltitude,
-        targetAltitude
-        );
-
-    // Обновление XY-оси
-    qreal size = zVisualizer.BASE_SIZE;
-    qreal halfSize = size / 2.0;
-    uavDot->setRect(QRectF(newPos.x() - halfSize, newPos.y() - halfSize, size, size));
-    uavDot->setBrush(QBrush(zVisualizer.getColorByAltitude(currentAltitude)));
-
-    // Расчет пройденного расстояния
-    traveledDistance += std::hypot(newPos.x() - currentPos.x(), newPos.y() - currentPos.y());
-
-    // РИСОВАНИЕ СЛЕДА ТРАЕКТОРИИ
-    if (std::hypot(newPos.x() - lastDrawnPos.x(), newPos.y() - lastDrawnPos.y()) > 1.0) {
-        QPen tracePen(Qt::gray, 1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-        scene->addLine(lastDrawnPos.x(), lastDrawnPos.y(), newPos.x(), newPos.y(), tracePen);
-        lastDrawnPos = newPos;
+    if (newState.pos.z() < newGround) {
+        mutableState.pos.setZ(newGround);
+        if (mutableState.vel.z() < 0) mutableState.vel.setZ(0);
     }
 
-    // Обновление GUI
+    qreal viewW = ui->graphicsViewZ ? ui->graphicsViewZ->width() : 400.0;
+    zVisualizer.drawTerrainProfile(zScene, newState.pos, manualMode ? QPointF() : UAVTrajectory.getCurrentTarget(), terrainModel, viewW);
+    zVisualizer.updateVisualization(altitudeBar, newState.pos.z() - newGround, uavModel.getTargetAltitude() - newGround);
+    zVisualizer.updateThrustVisualization(zScene, newState.pos.z(), newGround, uavModel.getThrustRatio());
+
+    uavDot->setPos(newPos);
+    uavDot->setAngles(newState.roll, newState.pitch);
+    uavDot->setVectors(QVector2D(newState.vel.x(), newState.vel.y()), manualMode ? QVector2D(0,0) : QVector2D(UAVTrajectory.getCurrentTarget() - newPos));
+    uavDot->setFillColor(zVisualizer.getColorByAltitude(newState.pos.z() - newGround));
+
+    qreal relAlt = newState.pos.z() - newGround;
     if (ui->labelPos) {
-        ui->labelPos->setText(QString("x = %1, y = %2, alt = %3, speed = %4, max = %5, Roll = %6, Pitch = %7, Yaw = %8, total = %9, traveled = %10")
-                                  .arg(newPos.x(), 0, 'f', 1)
-                                  .arg(newPos.y(), 0, 'f', 1)
-                                  .arg(currentAltitude, 0, 'f', 1)
-                                  .arg(currentSpeed, 0, 'f', 1)
-                                  .arg(maxSpeedLocal, 0, 'f', 1)
-                                  .arg(currentRoll, 0, 'f', 1)
-                                  .arg(currentPitch, 0, 'f', 1)
-                                  .arg(currentYaw, 0, 'f', 1)
-                                  .arg(totalDistance, 0, 'f', 1)
-                                  .arg(traveledDistance, 0, 'f', 1));
+        ui->labelPos->setText(QString("x=%1 y=%2 alt=%3 speed=%4 Roll=%5 Pitch=%6 Yaw=%7")
+                                  .arg(newPos.x(),0,'f',1).arg(newPos.y(),0,'f',1)
+                                  .arg(relAlt,0,'f',1).arg(newState.vel.toVector2D().length(),0,'f',1)
+                                  .arg(newState.roll,0,'f',1).arg(newState.pitch,0,'f',1)
+                                  .arg(newState.yaw,0,'f',1));
     }
 }
