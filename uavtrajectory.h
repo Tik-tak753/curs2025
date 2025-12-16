@@ -8,7 +8,7 @@
 class UAVTrajectory
 {
 public:
-    const qreal CORNER_RADIUS = 20.0;
+    const qreal CORNER_RADIUS = 2.0;
     UAVTrajectory();
     void addPoint(qreal x, qreal y);
     void reset();

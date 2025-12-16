@@ -1,109 +1,86 @@
 #include "uavzvisualizer.h"
 #include "terrainmodel.h"
-#include <QGraphicsPathItem>
+
 #include <QPainterPath>
-#include <QVector2D>
-#include <QPolygonF>
+#include <QtMath>
 
-UAVZVisualizer::UAVZVisualizer() {}
-
-qreal UAVZVisualizer::altitudeToY(qreal alt) const {
-    qreal normalizedAlt = qBound(0.0, alt / MAX_ALTITUDE, 1.0);
-    return MAX_BAR_HEIGHT * (1.0 - normalizedAlt);
+qreal UAVZVisualizer::scaleAltitude(qreal alt) const
+{
+    qreal t = qBound(0.0, alt / MAX_ALTITUDE, 1.0);
+    return VIEW_HEIGHT * (1.0 - t);
 }
 
-qreal UAVZVisualizer::scaleAltitudeToScene(qreal altitudeAbs) const {
-    qreal altRatio = altitudeAbs / MAX_ALTITUDE;
-    return MAX_BAR_HEIGHT * (1.0 - qBound(0.0, altRatio, 1.0));
+QColor UAVZVisualizer::getColorByAltitude(qreal alt) const
+{
+    qreal t = qBound(0.0, alt / MAX_ALTITUDE, 1.0);
+    return QColor::fromHsvF((1.0 - t) * 0.33, 1.0, 1.0);
 }
 
-void UAVZVisualizer::updateVisualization(QGraphicsRectItem* bar, qreal currentAlt, qreal targetAlt) {
-    if (bar && bar->scene()) {
-        bar->setVisible(false);
-    }
-}
+void UAVZVisualizer::draw(
+    QGraphicsScene* scene,
+    const QVector3D& uavPos,
+    const QPointF& target,
+    TerrainModel* terrain,
+    qreal viewWidth,
+    qreal thrustRatio
+    )
+{
+    if (!scene || !terrain)
+        return;
 
-void UAVZVisualizer::updateThrustVisualization(QGraphicsScene* scene, qreal currentAlt, qreal groundAlt, qreal thrustRatio) {
-    if (thrustLine && thrustLine->scene()) {
-        thrustLine->setVisible(false);
-    }
-}
+    scene->clear();
 
-QColor UAVZVisualizer::getColorByAltitude(qreal alt) {
-    qreal ratio = qBound(0.0, alt / (MAX_ALTITUDE / 2.0), 1.0);
-    int r = 255 * ratio;
-    int g = 255 * (1.0 - ratio);
-    return QColor(r, g, 0);
-}
+    const int SAMPLES = 50;
+    const qreal RANGE = 200.0;
 
-void UAVZVisualizer::cleanupSceneElements(QGraphicsScene* scene) {
-    if (!scene) return;
+    const qreal halfW = viewWidth * 0.5;
 
-    if (uavZDot) {
-        scene->removeItem(uavZDot);
-        delete uavZDot;
-        uavZDot = nullptr;
-    }
-    if (terrainPathItem) {
-        scene->removeItem(terrainPathItem);
-        delete terrainPathItem;
-        terrainPathItem = nullptr;
-    }
-    if (thrustLine) {
-        scene->removeItem(thrustLine);
-        delete thrustLine;
-        thrustLine = nullptr;
-    }
-}
+    QPointF posXY(uavPos.x(), uavPos.y());
+    QVector2D dir(1, 0);
 
-void UAVZVisualizer::drawTerrainProfile(QGraphicsScene* scene, const QVector3D& currentPos, QPointF targetXY, TerrainModel* terrainModel, qreal zViewWidth) {
-    if (!scene || !terrainModel) return;
+    if (!target.isNull() && target != posXY)
+        dir = QVector2D(target - posXY).normalized();
 
-    const int PROFILE_WIDTH_METERS = 200;
-    const int NUM_POINTS = 50;
-    QPointF currentPosXY(currentPos.x(), currentPos.y());
-    QVector2D direction(1.0, 0.0);
+    /* ===== Terrain profile ===== */
 
-    if (!targetXY.isNull() && (targetXY != currentPosXY)) {
-        direction = QVector2D(targetXY - currentPosXY).normalized();
-    } else if (currentPos.toVector2D().lengthSquared() > 0.01) {
-        direction = currentPos.toVector2D().normalized();
+    QPainterPath path;
+    path.moveTo(-halfW, VIEW_HEIGHT);
+
+    for (int i = 0; i <= SAMPLES; ++i)
+    {
+        qreal t = qreal(i) / SAMPLES;
+        QPointF p = posXY + dir.toPointF() * (RANGE * (t - 0.5));
+        qreal g = terrain->getGroundAltitude(p.x(), p.y());
+
+        qreal x = -halfW + viewWidth * t;
+        qreal y = scaleAltitude(g);
+
+        path.lineTo(x, y);
     }
 
-    QPolygonF profilePolygon;
-    const int MAP_W = 800;
-    const int MAP_H = 600;
-    qreal uavZScaledY = scaleAltitudeToScene(currentPos.z());
+    path.lineTo(halfW, VIEW_HEIGHT);
+    path.closeSubpath();
 
-    for (int i = 0; i <= NUM_POINTS; ++i) {
-        qreal relDist = (qreal)i / NUM_POINTS;
-        QPointF checkPoint = currentPosXY + direction.toPointF() * (PROFILE_WIDTH_METERS * relDist);
-        qreal absGroundAlt = terrainModel->getGroundAltitude(
-            qBound(0.0, checkPoint.x(), (qreal)MAP_W - 1.0),
-            qBound(0.0, checkPoint.y(), (qreal)MAP_H - 1.0));
-        qreal scaledY = scaleAltitudeToScene(absGroundAlt);
-        qreal scaledX = zViewWidth * relDist;
-        profilePolygon << QPointF(scaledX, scaledY);
-    }
+    scene->addPath(
+        path,
+        QPen(Qt::darkGreen, 2),
+        QBrush(QColor(100, 150, 100, 150))
+        );
 
-    profilePolygon << QPointF(zViewWidth, MAX_BAR_HEIGHT);
-    profilePolygon << QPointF(0, MAX_BAR_HEIGHT);
+    /* ===== UAV (centered) ===== */
 
-    if (!terrainPathItem) {
-        QPainterPath path;
-        path.addPolygon(profilePolygon);
-        terrainPathItem = scene->addPath(path, QPen(Qt::darkGreen, 2), QBrush(QColor(100, 150, 100, 150)));
-    } else {
-        QPainterPath path;
-        path.addPolygon(profilePolygon);
-        terrainPathItem->setPath(path);
-    }
+    qreal yUAV = scaleAltitude(uavPos.z());
+    scene->addEllipse(
+        -4, yUAV - 4, 8, 8,
+        QPen(Qt::red),
+        QBrush(Qt::red)
+        );
 
-    if (!uavZDot) {
-        const qreal DOT_SIZE = 8.0;
-        QPen uavPen(Qt::red, 1);
-        uavZDot = scene->addEllipse(-DOT_SIZE / 2.0, -DOT_SIZE / 2.0, DOT_SIZE, DOT_SIZE, uavPen, QBrush(Qt::red));
-        uavZDot->setZValue(1.0);
-    }
-    uavZDot->setPos(0, uavZScaledY);
+    /* ===== Thrust ===== */
+
+    scene->addLine(
+        0, yUAV,
+        30 * thrustRatio, yUAV,
+        QPen(Qt::blue, 2, Qt::DashLine)
+        );
 }
